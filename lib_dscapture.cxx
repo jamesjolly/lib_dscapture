@@ -3,8 +3,6 @@
 // Copyright (C) 2014, James Jolly (jamesjolly@gmail.com)
 // See MIT-LICENSE.txt for legalese.
 
-#include <pthread.h>
-
 #include <vector>
 #include <iostream>
 #include <cmath>
@@ -12,6 +10,8 @@ using namespace std;
 
 #include <DepthSense.hxx>
 namespace ds = DepthSense;
+
+#include <boost/thread.hpp>
 
 #include <boost/python.hpp>
 namespace bp = boost::python;
@@ -22,33 +22,35 @@ namespace bn = boost::numpy;
 bool g_device_found = false;
 ds::Context g_context;
 
-uint32_t g_dframes_received = 0;
-uint32_t g_last_capture_t = 0;
 ds::DepthNode g_dnode;
 unsigned char* depth_im_data;
+uint32_t g_dframes_received = 0;
+uint32_t g_last_depth_time = 0;
 
 const int c_PIXEL_COUNT_QVGA = 76800; // 320x240
-const float c_SCALE_DEPTHVAL = 255.0/log10(32001); // deemphasizes differences as range increases
+const int c_PIXEL_COUNT_VGA = 921600; // 640x480
+const float c_SCALE_DEPTHVAL = 255.0/log10(32001);
 
 // event handler: new depth frame
 void onNewDepthSample(ds::DepthNode node, ds::DepthNode::NewSampleReceivedData data)
 {
-    g_last_capture_t = data.timeOfCapture/1000000;
     for(size_t j = 0; j < data.depthMap.size(); j++)
     {
-    	if(data.depthMap[j] < 32002) // sentinal value for oversaturated
-    	{
-			depth_im_data[j] = uint8_t(c_SCALE_DEPTHVAL*log10(data.depthMap[j]));
-    	}
-    	else
-    	{
-    		depth_im_data[j] = uint8_t(0);
-    	}
+        if(data.depthMap[j] < 32002) // sentinal value for oversaturated
+        {
+            depth_im_data[j] = uint8_t(c_SCALE_DEPTHVAL*log10(data.depthMap[j] + 1));
+            // log10( ) - deemphasizes differences as range increases
+        }
+        else
+        {
+            depth_im_data[j] = uint8_t(0);
+        }
     }
+    g_last_depth_time = data.timeOfCapture/1000000;
     g_dframes_received++;
 }
 
-// set close mode at 30 Hz
+// TODO: make this easily configurable, default to close mode at 30 Hz
 void configureDepthNode(ds::Node node)
 {
     if(node.is<ds::DepthNode>() && !g_dnode.isSet())
@@ -85,7 +87,7 @@ void onNodeConnected(ds::Device device, ds::Device::NodeAddedData data)
 // event handler: tear down depth feed
 void onNodeDisconnected(ds::Device device, ds::Device::NodeRemovedData data)
 {
-    if (data.node.is<ds::DepthNode>() && (data.node.as<ds::DepthNode>() == g_dnode))
+    if(data.node.is<ds::DepthNode>() && (data.node.as<ds::DepthNode>() == g_dnode))
     {
         g_dnode.unset();
         cout << "depth node disconnected\n";
@@ -110,7 +112,7 @@ void onDeviceDisconnected(ds::Context context, ds::Context::DeviceRemovedData da
     cout << "device disconnected\n";
 }
 
-void* capture_main(void* _)
+void capture_main()
 {
     g_context = ds::Context::create("localhost");
     g_context.deviceAddedEvent().connect(&onDeviceConnected);
@@ -133,57 +135,60 @@ void* capture_main(void* _)
         }
     }
 
+    // starts DepthSense event loop
     g_context.startNodes();
     g_context.run();
-    g_context.stopNodes();
-
-    if(g_dnode.isSet())
-    {
-        g_context.unregisterNode(g_dnode);
-		delete [ ] depth_im_data;
-    }
 }
 
 void start()
 {
-	pthread_t capture_thread;
-	if(pthread_create(&capture_thread, NULL, capture_main, NULL))
-	{
-		cout << "error creating capture thread\n";
-	}
+    boost::thread capture_thread(capture_main);
 }
 
-int ts()
+void stop()
 {
-	return g_last_capture_t;
+    cout << "stopping capture thread\n";
+    g_context.stopNodes();
+    if(g_dnode.isSet())
+    {
+        g_context.unregisterNode(g_dnode);
+        delete [ ] depth_im_data;
+    }
 }
 
-int at()
+int last_dtime()
 {
-	return g_dframes_received;
+    return g_last_depth_time;
 }
 
-bn::ndarray get_frame()
+int last_dframe()
 {
-	bp::tuple shape = bp::make_tuple(240, 320);
-	bp::tuple stride = bp::make_tuple(320, 1);
-	bn::dtype dt = bn::dtype::get_builtin<uint8_t>();
-	bp::object own;
-	if(g_dframes_received == 0)
-	{
-		return bn::zeros(shape, dt);
-	}
-	bn::ndarray data_ex = bn::from_data(depth_im_data, dt, shape, stride, own);
-	return data_ex.copy();
+    return g_dframes_received;
+}
+
+bn::ndarray get_dframe()
+{
+    bp::tuple shape = bp::make_tuple(240, 320);
+    bp::tuple stride = bp::make_tuple(320, 1);
+    bn::dtype dt = bn::dtype::get_builtin<uint8_t>();
+    bp::object own;
+    if(g_dframes_received == 0)
+    {
+        return bn::zeros(shape, dt).copy();
+    }
+    bn::ndarray data_ex = bn::from_data(depth_im_data, dt, shape, stride, own);
+    return data_ex.copy();
 }
 
 BOOST_PYTHON_MODULE(lib_dscapture)
 {
-	bn::initialize();
-	bp::numeric::array::set_module_and_type("numpy", "ndarray");
-	bp::def("get_frame", get_frame);
-	bp::def("start", start);
-	bp::def("ts", ts);
-	bp::def("at", at);
+    bn::initialize();
+    bp::numeric::array::set_module_and_type("numpy", "ndarray");
+    bp::def("start", start);
+    bp::def("stop", stop);
+
+    bp::def("get_dframe", get_dframe);
+    bp::def("last_dtime", last_dtime);
+    bp::def("last_dframe", last_dframe);
 }
 
