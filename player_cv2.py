@@ -16,6 +16,9 @@ from timed_event import repeat_event
 c_UPDATE_INTERVAL = 0.10 # s
 c_TICK_INTERVAL = 0.05 # s
 
+c_DEPTH_FRAMERATE = 30 # Hz
+c_CAMERA_MODE = 0 # {CLOSE_MODE = 0, LONG_RANGE = 1} 
+
 def plot_event():
 	dim = dsc.get_dframe()
 	dim_jet_resized = cv2.resize(jet(dim), (640, 480))
@@ -31,6 +34,6 @@ def main():
 
 if __name__ == '__main__':
 
-	dsc.start()	
+	dsc.start(c_DEPTH_FRAMERATE, c_CAMERA_MODE)	
 	main()
 

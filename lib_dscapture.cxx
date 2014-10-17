@@ -31,6 +31,9 @@ const int c_PIXEL_COUNT_QVGA = 76800; // 320x240
 const int c_PIXEL_COUNT_VGA = 921600; // 640x480
 const float c_SCALE_DEPTHVAL = 255.0/log10(32001);
 
+const int c_DEFAULT_DEPTH_FRAMERATE = 30;
+const int c_DEFAULT_CONFIG_MODE = ds::DepthNode::CAMERA_MODE_CLOSE_MODE;
+
 // event handler: new depth frame
 void onNewDepthSample(ds::DepthNode node, ds::DepthNode::NewSampleReceivedData data)
 {
@@ -50,8 +53,8 @@ void onNewDepthSample(ds::DepthNode node, ds::DepthNode::NewSampleReceivedData d
     g_dframes_received++;
 }
 
-// TODO: make this easily configurable, default to close mode at 30 Hz
-void configureDepthNode(ds::Node node)
+// defaults to close mode at 30 Hz
+void configureDepthNode(ds::Node node, int p_config_framerate, int p_config_mode)
 {
     if(node.is<ds::DepthNode>() && !g_dnode.isSet())
     {
@@ -59,8 +62,8 @@ void configureDepthNode(ds::Node node)
         g_dnode.newSampleReceivedEvent().connect(&onNewDepthSample);
         ds::DepthNode::Configuration config = g_dnode.getConfiguration();
         config.frameFormat = ds::FRAME_FORMAT_QVGA;
-        config.framerate = 30;
-        config.mode = ds::DepthNode::CAMERA_MODE_CLOSE_MODE;
+        config.framerate = p_config_framerate;
+        config.mode = ds::DepthNode::CameraMode(p_config_mode);
         config.saturation = true;
         g_dnode.setEnableDepthMap(true);
         try
@@ -81,7 +84,7 @@ void configureDepthNode(ds::Node node)
 // event handler: setup depth feed
 void onNodeConnected(ds::Device device, ds::Device::NodeAddedData data)
 {
-    configureDepthNode(data.node);
+    configureDepthNode(data.node, c_DEFAULT_DEPTH_FRAMERATE, c_DEFAULT_CONFIG_MODE);
 }
 
 // event handler: tear down depth feed
@@ -112,7 +115,7 @@ void onDeviceDisconnected(ds::Context context, ds::Context::DeviceRemovedData da
     cout << "device disconnected\n";
 }
 
-void capture_main()
+void capture_main(int p_config_framerate, int p_config_mode)
 {
     g_context = ds::Context::create("localhost");
     g_context.deviceAddedEvent().connect(&onDeviceConnected);
@@ -131,7 +134,7 @@ void capture_main()
         cout << "found " << na.size() << " nodes\n";
         for(int n = 0; n < na.size(); n++)
         {
-            configureDepthNode(na[n]);
+            configureDepthNode(na[n], p_config_framerate, p_config_mode);
         }
     }
 
@@ -140,9 +143,11 @@ void capture_main()
     g_context.run();
 }
 
-void start()
+void start(
+	int p_config_framerate=c_DEFAULT_DEPTH_FRAMERATE, 
+	int p_config_mode=c_DEFAULT_CONFIG_MODE)
 {
-    boost::thread capture_thread(capture_main);
+    boost::thread capture_thread(capture_main, p_config_framerate, p_config_mode);
 }
 
 void stop()
