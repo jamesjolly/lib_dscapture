@@ -13,7 +13,7 @@ import lib_dscapture as dsc
 from jetize import jet
 from timed_event import repeat_event
 
-c_UPDATE_INTERVAL = 0.10 # s
+c_UPDATE_INTERVAL = 0.034 # s (~30 Hz)
 c_TICK_INTERVAL = 0.05 # s
 
 c_DEPTH_FRAMERATE = 30 # Hz
@@ -22,6 +22,8 @@ c_CAMERA_MODE = 0 # {CLOSE_MODE = 0, LONG_RANGE = 1}
 def plot_event():
 	dim = dsc.get_dframe()
 	dim_jet_resized = cv2.resize(jet(dim), (640, 480))
+	cim = dsc.get_cframe()
+	cv2.imshow('cview', cim)
 	cv2.imshow('dview', dim_jet_resized)
 	cv2.waitKey(1)
 

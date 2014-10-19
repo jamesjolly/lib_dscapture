@@ -27,12 +27,29 @@ unsigned char* depth_im_data;
 uint32_t g_dframes_received = 0;
 uint32_t g_last_depth_time = 0;
 
+ds::ColorNode g_cnode;
+unsigned char* color_im_data;
+uint32_t g_cframes_received = 0;
+uint32_t g_last_color_time = 0;
+
 const int c_PIXEL_COUNT_QVGA = 76800; // 320x240
 const int c_PIXEL_COUNT_VGA = 921600; // 640x480
 const float c_SCALE_DEPTHVAL = 255.0/log10(32001);
 
+// cameras default to 30 Hz, close mode for TOF
 const int c_DEFAULT_DEPTH_FRAMERATE = 30;
 const int c_DEFAULT_CONFIG_MODE = ds::DepthNode::CAMERA_MODE_CLOSE_MODE;
+
+// event handler: new color frame
+void onNewColorSample(ds::ColorNode node, ds::ColorNode::NewSampleReceivedData data)
+{
+    for(size_t j = 0; j < 3*c_PIXEL_COUNT_VGA; j++)
+    {
+        color_im_data[j] = data.colorMap[j];
+    }
+    g_last_color_time = data.timeOfCapture/1000000;
+    g_cframes_received++;
+}
 
 // event handler: new depth frame
 void onNewDepthSample(ds::DepthNode node, ds::DepthNode::NewSampleReceivedData data)
@@ -53,7 +70,6 @@ void onNewDepthSample(ds::DepthNode node, ds::DepthNode::NewSampleReceivedData d
     g_dframes_received++;
 }
 
-// defaults to close mode at 30 Hz
 void configureDepthNode(ds::Node node, int p_config_framerate, int p_config_mode)
 {
     if(node.is<ds::DepthNode>() && !g_dnode.isSet())
@@ -81,10 +97,38 @@ void configureDepthNode(ds::Node node, int p_config_framerate, int p_config_mode
     }
 }
 
-// event handler: setup depth feed
+void configureColorNode(ds::Node node, int p_config_framerate)
+{
+    if(node.is<ds::ColorNode>() && !g_cnode.isSet())
+    {
+        g_cnode = node.as<ds::ColorNode>();
+        g_cnode.newSampleReceivedEvent().connect(&onNewColorSample);
+        ds::ColorNode::Configuration config = g_cnode.getConfiguration();
+        config.frameFormat = ds::FRAME_FORMAT_VGA;
+        config.compression = ds::COMPRESSION_TYPE_MJPEG;
+        config.powerLineFrequency = ds::POWER_LINE_FREQUENCY_60HZ;
+        config.framerate = p_config_framerate;
+        g_cnode.setEnableColorMap(true);
+        try
+        {
+            g_context.requestControl(g_cnode, 0);
+            g_cnode.setConfiguration(config);
+            cout << "color node connected\n";
+            color_im_data = new unsigned char[c_PIXEL_COUNT_VGA*3];
+        }
+        catch(ds::Exception& e)
+        {
+            cout << "Exception: " << e.what() << "\n";
+        }
+        g_context.registerNode(node);
+    }
+}
+
+// node discovered event: setup depth, color nodes
 void onNodeConnected(ds::Device device, ds::Device::NodeAddedData data)
 {
     configureDepthNode(data.node, c_DEFAULT_DEPTH_FRAMERATE, c_DEFAULT_CONFIG_MODE);
+    configureColorNode(data.node, c_DEFAULT_DEPTH_FRAMERATE);
 }
 
 // event handler: tear down depth feed
@@ -94,6 +138,11 @@ void onNodeDisconnected(ds::Device device, ds::Device::NodeRemovedData data)
     {
         g_dnode.unset();
         cout << "depth node disconnected\n";
+    }
+    if(data.node.is<ds::ColorNode>() && (data.node.as<ds::ColorNode>() == g_cnode))
+    {
+        g_cnode.unset();
+        cout << "color node disconnected\n";
     }
 }
 
@@ -135,6 +184,7 @@ void capture_main(int p_config_framerate, int p_config_mode)
         for(int n = 0; n < na.size(); n++)
         {
             configureDepthNode(na[n], p_config_framerate, p_config_mode);
+            configureColorNode(na[n], p_config_framerate);
         }
     }
 
@@ -144,8 +194,8 @@ void capture_main(int p_config_framerate, int p_config_mode)
 }
 
 void start(
-	int p_config_framerate=c_DEFAULT_DEPTH_FRAMERATE, 
-	int p_config_mode=c_DEFAULT_CONFIG_MODE)
+    int p_config_framerate=c_DEFAULT_DEPTH_FRAMERATE, 
+    int p_config_mode=c_DEFAULT_CONFIG_MODE)
 {
     boost::thread capture_thread(capture_main, p_config_framerate, p_config_mode);
 }
@@ -159,6 +209,21 @@ void stop()
         g_context.unregisterNode(g_dnode);
         delete [ ] depth_im_data;
     }
+    if(g_cnode.isSet())
+    {
+        g_context.unregisterNode(g_cnode);
+        delete [ ] color_im_data;
+    }
+}
+
+int last_ctime()
+{
+    return g_last_color_time;
+}
+
+int last_cframe()
+{
+    return g_cframes_received;
 }
 
 int last_dtime()
@@ -171,16 +236,30 @@ int last_dframe()
     return g_dframes_received;
 }
 
+bn::ndarray get_cframe()
+{
+    bp::tuple shape = bp::make_tuple(480, 640, 3);
+    bn::dtype dt = bn::dtype::get_builtin<uint8_t>();
+    if(g_cframes_received == 0)
+    {
+        return bn::zeros(shape, dt).copy();
+    }
+    bp::object own;
+    bp::tuple stride = bp::make_tuple(3*640, 3, 1);
+    bn::ndarray data_ex = bn::from_data(color_im_data, dt, shape, stride, own);    
+    return data_ex.copy();
+}
+
 bn::ndarray get_dframe()
 {
     bp::tuple shape = bp::make_tuple(240, 320);
-    bp::tuple stride = bp::make_tuple(320, 1);
     bn::dtype dt = bn::dtype::get_builtin<uint8_t>();
-    bp::object own;
     if(g_dframes_received == 0)
     {
         return bn::zeros(shape, dt).copy();
     }
+    bp::object own;
+    bp::tuple stride = bp::make_tuple(320, 1);
     bn::ndarray data_ex = bn::from_data(depth_im_data, dt, shape, stride, own);
     return data_ex.copy();
 }
@@ -191,6 +270,10 @@ BOOST_PYTHON_MODULE(lib_dscapture)
     bp::numeric::array::set_module_and_type("numpy", "ndarray");
     bp::def("start", start);
     bp::def("stop", stop);
+
+    bp::def("get_cframe", get_cframe);
+    bp::def("last_ctime", last_ctime);
+    bp::def("last_cframe", last_cframe);
 
     bp::def("get_dframe", get_dframe);
     bp::def("last_dtime", last_dtime);
